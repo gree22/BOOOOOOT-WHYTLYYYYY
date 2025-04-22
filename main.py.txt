@@ -1,0 +1,151 @@
+import json
+import os
+import time
+from datetime import datetime
+from threading import Thread
+from flask import Flask, request
+import telebot
+import requests
+
+# === DATOS DE TU PROYECTO ===
+TOKEN = "8012810623:AAEaV5t2sWe9HS5UxluACsUzRSLZrxrhyKM"
+WEBAPP_URL = "https://884d04a1-770a-4671-a427-4a386e523b23-00-15yhobofqtqxe.janeway.replit.dev/"
+CANAL_PRIVADO_ID = -1002156053309
+
+bot = telebot.TeleBot(TOKEN)
+
+# === SERVIDOR FLASK PARA MANTENER VIVO EN REPLIT ===
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return 'Bot en funcionamiento!'
+
+# === FUNCIONES JSON ===
+USERS_FILE = "users.json"
+
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+    with open(USERS_FILE, "r") as f:
+        return json.load(f)
+
+def save_users(data):
+    with open(USERS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+# === COMANDOS DEL BOT ===
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.from_user.id
+    webapp_url = f"{WEBAPP_URL}?user_id={user_id}"
+
+    markup = telebot.types.InlineKeyboardMarkup()
+    btn = telebot.types.InlineKeyboardButton(
+        text="💸 Reclamar recompensa",
+        web_app=telebot.types.WebAppInfo(url=webapp_url)
+    )
+    markup.add(btn)
+    bot.reply_to(message, "👋 ¡Bienvenido! Presiona el botón para reclamar tu recompensa:", reply_markup=markup)
+
+# === REGISTRAR PAYEER ===
+@bot.message_handler(func=lambda message: message.text.startswith("P") and len(message.text) >= 8)
+def registrar_payeer(message):
+    user_id = str(message.from_user.id)
+    payeer_id = message.text.strip()
+    users = load_users()
+    ip_simulada = f"IP_SIMULADA_{user_id}"  # En Replit, IP simulada
+    ip_count = sum(1 for data in users.values() if data['ip'] == ip_simulada)
+
+    if ip_count >= 3:
+        bot.reply_to(message, "⚠️ Límite de 3 cuentas desde esta IP alcanzado.")
+        return
+
+    users[user_id] = {
+        "payeer": payeer_id,
+        "ip": ip_simulada,
+        "pais": "Desconocido",
+        "ciudad": "Desconocida",
+        "fecha_registro": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "monto_total": 0.0,
+        "reclamos": []
+    }
+    save_users(users)
+    bot.reply_to(message, "✅ ¡Registro completado!\nUsa /start para acceder al botón de recompensa.")
+
+# === MENSAJE DESDE LA WEBAPP PARA RECLAMO ===
+@bot.message_handler(func=lambda m: m.text.startswith("RECLAMO:"))
+def actualizar_reclamo(message):
+    data = message.text.replace("RECLAMO:", "").strip()
+    partes = dict(x.split('=') for x in data.split('|'))
+
+    user_id = partes['user_id'].strip()
+    monto = float(partes['monto'].strip())
+
+    users = load_users()
+
+    if user_id in users:
+        users[user_id]['monto_total'] = users[user_id].get('monto_total', 0) + monto
+        if 'reclamos' not in users[user_id]:
+            users[user_id]['reclamos'] = []
+        users[user_id]['reclamos'].append({
+            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "monto": monto
+        })
+        save_users(users)
+        bot.reply_to(message, f"✅ Reclamo de {monto} rublos registrado.")
+    else:
+        bot.reply_to(message, "❌ Usuario no registrado.")
+
+# === MENSAJE DESDE LA WEBAPP PARA IP Y UBICACIÓN ===
+@bot.message_handler(func=lambda m: m.text.startswith("REGISTRO_IP:"))
+def registrar_ubicacion(message):
+    data = message.text.replace("REGISTRO_IP:", "").strip()
+    partes = dict(x.split('=') for x in data.split('|'))
+
+    user_id = partes['user_id'].strip()
+    ip = partes['ip'].strip()
+    pais = partes.get('pais', 'Desconocido').strip()
+    ciudad = partes.get('ciudad', 'Desconocida').strip()
+
+    users = load_users()
+
+    if user_id in users:
+        users[user_id]['ip'] = ip
+        users[user_id]['pais'] = pais
+        users[user_id]['ciudad'] = ciudad
+        save_users(users)
+        bot.reply_to(message, "🌍 Datos de IP y ubicación actualizados correctamente.")
+    else:
+        bot.reply_to(message, "❌ Usuario no encontrado para guardar ubicación.")
+
+# === MENSAJES DE RETIRO ===
+@bot.message_handler(func=lambda m: m.text.startswith("RETIRO:"))
+def recibir_retiro_webapp(message):
+    datos = message.text.replace("RETIRO:", "").strip()
+    fecha = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    texto = f"""
+💸 NUEVA SOLICITUD DE RETIRO:
+{datos}
+🗓 Fecha: {fecha}
+"""
+    bot.send_message(CANAL_PRIVADO_ID, texto)
+
+# === INICIAR FLASK Y EL BOT DE FORMA SEGURA ===
+def iniciar_flask():
+    app.run(host='0.0.0.0', port=8080)
+
+def iniciar_bot():
+    bot.skip_pending = True
+    while True:
+        try:
+            print("Bot corriendo con Telebot...")
+            bot.infinity_polling(timeout=10, long_polling_timeout=5)
+        except Exception as e:
+            print(f"Error en polling: {e}")
+            time.sleep(5)
+
+if __name__ == '__main__':
+    Thread(target=iniciar_flask).start()
+    Thread(target=iniciar_bot).start()
